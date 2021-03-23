@@ -16,6 +16,7 @@ import skunk.util.Typer
 import natchez.Trace
 import fs2.io.tcp.SocketGroup
 import skunk.net.protocol.Exchange
+import skunk.net.protocol.Describe
 
 /**
  * Interface for a Postgres database, expressed through high-level operations that rely on exchange
@@ -95,6 +96,9 @@ trait Protocol[F[_]] {
    * clear that this is a useful thing to expose.
    */
   def transactionStatus: Signal[F, TransactionStatus]
+
+  /** Cache for the `Describe` protocol. */
+  def describeCache: Describe.Cache[F]
 
 }
 
@@ -184,23 +188,25 @@ object Protocol {
    * @param port  Postgres port, default 5432
    */
   def apply[F[_]: Concurrent: ContextShift: Trace](
-    host:         String,
-    port:         Int,
-    debug:        Boolean,
-    nam:          Namer[F],
-    readTimeout:  FiniteDuration,
-    writeTimeout: FiniteDuration,
-    sg:           SocketGroup,
-    sslOptions:   Option[SSLNegotiation.Options[F]]
+    host:          String,
+    port:          Int,
+    debug:         Boolean,
+    nam:           Namer[F],
+    readTimeout:   FiniteDuration,
+    writeTimeout:  FiniteDuration,
+    sg:            SocketGroup,
+    sslOptions:    Option[SSLNegotiation.Options[F]],
+    describeCache: Describe.Cache[F],
   ): Resource[F, Protocol[F]] =
     for {
       bms <- BufferedMessageSocket[F](host, port, 256, debug, readTimeout, writeTimeout, sg, sslOptions) // TODO: should we expose the queue size?
-      p   <- Resource.liftF(fromMessageSocket(bms, nam))
+      p   <- Resource.liftF(fromMessageSocket(bms, nam, describeCache))
     } yield p
 
   def fromMessageSocket[F[_]: Concurrent: Trace](
     bms: BufferedMessageSocket[F],
-    nam: Namer[F]
+    nam: Namer[F],
+    dc:  Describe.Cache[F],
   ): F[Protocol[F]] =
     Exchange[F].map { ex =>
       new Protocol[F] {
@@ -218,10 +224,10 @@ object Protocol {
           bms.parameters
 
         override def prepare[A](command: Command[A], ty: Typer): Resource[F, PreparedCommand[F, A]] =
-          protocol.Prepare[F].apply(command, ty)
+          protocol.Prepare[F](describeCache).apply(command, ty)
 
         override def prepare[A, B](query: Query[A, B], ty: Typer): Resource[F, PreparedQuery[F, A, B]] =
-          protocol.Prepare[F].apply(query, ty)
+          protocol.Prepare[F](describeCache).apply(query, ty)
 
         override def execute(command: Command[Void]): F[Completion] =
           protocol.Query[F].apply(command)
@@ -234,6 +240,9 @@ object Protocol {
 
         override def transactionStatus: Signal[F, TransactionStatus] =
           bms.transactionStatus
+
+        override val describeCache: Describe.Cache[F] =
+          dc
 
       }
     }
