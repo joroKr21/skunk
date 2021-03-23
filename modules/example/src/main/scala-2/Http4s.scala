@@ -29,6 +29,7 @@ import fs2.io.tcp.SocketGroup
 import skunk.util.Pool
 import skunk.util.Recycler
 import scala.concurrent.ExecutionContext.global
+import skunk.net.protocol.Describe
 
 /**
  * A small but complete web service that serves data from the `world` database and accumulates
@@ -104,15 +105,18 @@ object Http4sExample extends IOApp {
   def countriesFromSocketGroup[F[_]: Concurrent: ContextShift: Trace](
     socketGroup: SocketGroup
   ): Resource[F, PooledCountries[F]] =
-    Session.fromSocketGroup(
-      host         = "localhost",
-      user         = "jimmy",
-      database     = "world",
-      password     = Some("banana"),
-      socketGroup  = socketGroup,
-      sslOptions   = None,
-      parameters   = Session.DefaultConnectionParameters
-    ).flatMap(countriesFromSession(_))
+    Resource.liftF(Describe.Cache.empty[F](1024, 1024)).flatMap { dc =>
+      Session.fromSocketGroup(
+        host         = "localhost",
+        user         = "jimmy",
+        database     = "world",
+        password     = Some("banana"),
+        socketGroup  = socketGroup,
+        sslOptions   = None,
+        parameters   = Session.DefaultConnectionParameters,
+        describeCache = dc,
+      ).flatMap(countriesFromSession(_))
+    }
 
   /** Resource yielding a pool of `Countries`, backed by a single `Blocker` and `SocketGroup`. */
   def pool[F[_]: Concurrent: ContextShift: Trace]: Resource[F, Resource[F, Countries[F]]] =
